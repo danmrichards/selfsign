@@ -2,6 +2,7 @@ package main
 
 import (
 	"crypto/tls"
+	"crypto/x509"
 	"flag"
 	"fmt"
 	"io"
@@ -12,12 +13,13 @@ import (
 )
 
 var (
-	cert, server, port, sslPort string
-	protocolCache               = make(map[string]protocol)
+	certFile, keyFile, server, port, sslPort string
+	protocolCache                            = make(map[string]protocol)
 )
 
 func init() {
-	flag.StringVar(&cert, "cert", "ssl/server.crt", "Path to the SSL certificate for the server")
+	flag.StringVar(&certFile, "cert", "ssl/server.crt", "Path to the SSL certificate file for the server")
+	flag.StringVar(&keyFile, "key", "ssl/server.key", "Path to the SSL private key file for the server")
 	flag.StringVar(&server, "server", "localhost", "Server for the server to ping")
 	flag.StringVar(&port, "port", "8080", "The port on which to ping non-SSL")
 	flag.StringVar(&sslPort, "ssl-port", "443", "The port on which to ping SSL")
@@ -33,43 +35,86 @@ const (
 func main() {
 	flag.Parse()
 
+	crt, err := ioutil.ReadFile(certFile)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	// Get the certificate pool.
+	crtPool, err := x509.SystemCertPool()
+	if err != nil {
+		// Just log the error instead of a fatal. In many cases (e.g. when
+		// running on windows) we won't be able to get the system cert pool
+		// at all. Better to just log and attempt to use the default pool.
+		log.Println("could not load system cert pool:", err)
+	}
+	if crtPool == nil {
+		crtPool = x509.NewCertPool()
+	}
+
+	// Add the self-signed cert to the CA pool.
+	if ok := crtPool.AppendCertsFromPEM(crt); !ok {
+		log.Fatalln("could not append certificate to the pool")
+	}
+
+	xkp, err := tls.LoadX509KeyPair(certFile, keyFile)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	// Spin up a HTTP client using the extended root CA pool and the key/pair
+	// we generated above. The key pair will be presented to the other side of
+	// the connection and verified. We could avoid this if we had a certificate
+	// from a root CA already trusted by the client and the server. Or if you
+	// want to live dangerously by disabling verification.
 	client := &http.Client{
 		Transport: &http.Transport{
 			TLSClientConfig: &tls.Config{
-				// Using this is pretty poor. In an ideal world you'd have
-				// a certificate on the remote server that is properly signed
-				// by a root CA.
-				InsecureSkipVerify: true,
+				Certificates: []tls.Certificate{xkp},
+				RootCAs:      crtPool,
 			},
 		},
 	}
 
-	fmt.Println("Ping one")
+	fmt.Println("ping one")
 	res, err := request(client, server, "/ping", port, sslPort, nil)
 	if err != nil {
-		log.Fatalln("do request:", err)
+		log.Fatalln("ping one request:", err)
 	}
 
 	b, err := ioutil.ReadAll(res.Body)
 	if err != nil {
-		log.Fatalln("read response:", err)
+		log.Fatalln("ping one response:", err)
 	}
 
 	fmt.Println(string(b))
 
 	fmt.Println()
-	fmt.Println("Ping two")
+	fmt.Println("ping two")
 	res, err = request(client, server, "/ping", port, sslPort, nil)
 	if err != nil {
-		log.Fatalln("do request:", err)
+		log.Fatalln("ping two request:", err)
 	}
 
 	b, err = ioutil.ReadAll(res.Body)
 	if err != nil {
-		log.Fatalln("read response:", err)
+		log.Fatalln("ping two response:", err)
 	}
 
 	fmt.Println(string(b))
+
+	fmt.Println()
+	fmt.Println("ping google just to prove the root certs still work")
+
+	res, err = client.Get("https://www.google.com")
+	if err != nil {
+		log.Fatalln("google request:", err)
+	}
+
+	if res.StatusCode != http.StatusOK {
+		log.Fatalln("could not ping google")
+	}
+	fmt.Println("pinged google")
 }
 
 // request sends an HTTP request and returns an HTTP response for the given

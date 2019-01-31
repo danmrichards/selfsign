@@ -22,6 +22,18 @@ client makes two ping request to illustrate that the protocol lookup only
 happens once and is then cached for the lifetime of the client.
 
 ## Usage
+Generate the certificate and key:
+```bash
+$ openssl req \
+    -x509 \
+    -nodes \
+    -newkey rsa:2048 \
+    -keyout ssl/server.key \
+    -out ssl/server.crt \
+    -days 3650 \
+    -subj "/C=GB/ST=Bournemouth/L=Bournemouth/O=FooBar/OU=Turbo Encabulator/CN=*"
+```
+
 Build the binaries:
 ```bash
 $ make

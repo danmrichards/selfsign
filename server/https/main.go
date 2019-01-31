@@ -1,8 +1,11 @@
 package main
 
 import (
+	"crypto/tls"
+	"crypto/x509"
 	"flag"
 	"fmt"
+	"io/ioutil"
 	"log"
 	"net"
 	"net/http"
@@ -33,17 +36,43 @@ func handlePing(w http.ResponseWriter, _ *http.Request) {
 func main() {
 	flag.Parse()
 
-	svr := http.NewServeMux()
-	svr.HandleFunc("/connupgrade", handleUpgrade)
+	// HTTP server to handle the upgrade indicator endpoint.
+	mux := http.NewServeMux()
+	mux.HandleFunc("/connupgrade", handleUpgrade)
 
+	// The server is blocking so has to be in a goroutine as we're running
+	// more than one server.
 	go func() {
 		fmt.Println("Serving on port:", port)
-		log.Fatal(http.ListenAndServe(net.JoinHostPort("", port), svr))
+		log.Fatal(http.ListenAndServe(net.JoinHostPort("", port), mux))
 	}()
 
-	svrSSL := http.NewServeMux()
-	svrSSL.HandleFunc("/ping", handlePing)
+	// Main HTTPS server providing our ping endpoint.
+	sslMux := http.NewServeMux()
+	sslMux.HandleFunc("/ping", handlePing)
+
+	crt, err := ioutil.ReadFile(cert)
+	if err != nil {
+		log.Fatalln("read cert:", err)
+	}
+
+	// Add the self-signed cert to the CA pool.
+	crtPool := x509.NewCertPool()
+	if ok := crtPool.AppendCertsFromPEM(crt); !ok {
+		log.Fatalln("could not append certificate to the pool")
+	}
+
+	// Spin up a server using the cert pool with our new cert appended. Also
+	// configure TLS to verify the certificate.
+	svr := &http.Server{
+		Addr:    net.JoinHostPort("", sslPort),
+		Handler: sslMux,
+		TLSConfig: &tls.Config{
+			ClientAuth: tls.RequireAndVerifyClientCert,
+			ClientCAs:  crtPool,
+		},
+	}
 
 	fmt.Println("Serving SSL on port:", sslPort)
-	log.Fatal(http.ListenAndServeTLS(net.JoinHostPort("", sslPort), cert, key, svrSSL))
+	log.Fatal(svr.ListenAndServeTLS(cert, key))
 }
